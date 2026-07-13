@@ -12,7 +12,12 @@ import fs from "node:fs";
 import os from "node:os";
 import {AgentMode} from "../AgentMode";
 import {expect, vi} from "vitest";
-import type {Model, ReasoningEffortOption} from "../app-server/v2";
+import type {
+    AccountLoginCompletedNotification,
+    LoginAccountResponse,
+    Model,
+    ReasoningEffortOption
+} from "../app-server/v2";
 
 export type MethodCallEvent = { method: string; args: any[] };
 
@@ -245,6 +250,8 @@ export interface CodexMockTestFixture extends TestFixture {
     sendServerRequest<T>(method: string, params: unknown): Promise<T>,
     setPermissionResponse(response: RequestPermissionResponse): void,
     setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void,
+    setAccountLoginResponse(response: LoginAccountResponse): void,
+    sendAccountLoginCompleted(notification: AccountLoginCompletedNotification): void,
 }
 
 /**
@@ -257,6 +264,7 @@ export interface CodexMockTestFixture extends TestFixture {
 export function createCodexMockTestFixture(): CodexMockTestFixture {
     let unhandledNotificationHandler: ((notification: any) => void) | null = null;
     const requestHandlers = new Map<string, (params: unknown) => Promise<unknown>>();
+    const loginCompletedHandlers = new Set<(notification: AccountLoginCompletedNotification) => void>();
 
     // State for controlling permission responses
     const permissionState: { response: RequestPermissionResponse } = {
@@ -271,7 +279,15 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
         onUnhandledNotification: (handler: (notification: any) => void) => {
             unhandledNotificationHandler = handler;
         },
-        onNotification: () => {},
+        onNotification: (method: string, handler: (notification: AccountLoginCompletedNotification) => void) => {
+            if (method === "account/login/completed") {
+                loginCompletedHandlers.add(handler);
+                return {
+                    dispose: () => loginCompletedHandlers.delete(handler),
+                };
+            }
+            return { dispose: () => {} };
+        },
         onRequest: (type: { method: string }, handler: (params: unknown) => Promise<unknown>) => {
             requestHandlers.set(type.method, handler);
         },
@@ -292,6 +308,7 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
         return { mock: "Mocked return" };
     });
     returnValues.set('requestPermission', () => permissionState.response);
+    returnValues.set('createElicitation', () => elicitationState.response);
 
     const acpConnection = createSmartMock<AcpClientConnection>((event) => {
         const normalizedEvent = normalizeAcpConnectionEvent(event);
@@ -328,6 +345,14 @@ export function createCodexMockTestFixture(): CodexMockTestFixture {
         },
         setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void {
             elicitationState.response = response;
+        },
+        setAccountLoginResponse(response: LoginAccountResponse): void {
+            vi.spyOn(baseFixture.getCodexAppServerClient(), "accountLogin").mockResolvedValue(response);
+        },
+        sendAccountLoginCompleted(notification: AccountLoginCompletedNotification): void {
+            for (const handler of loginCompletedHandlers) {
+                handler(notification);
+            }
         },
     };
 }
